@@ -1,0 +1,22 @@
+{
+  "name": "veille-sync",
+  "version": "1.0.0",
+  "description": "Watcher iCloud Clippings → Claude API → Anytype",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "chokidar": "^3.6.0",
+    "dotenv": "^16.4.5",
+    "gray-matter": "^4.0.3",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.0"
+  }
+}

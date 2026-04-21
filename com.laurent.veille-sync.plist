@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.laurent.veille-sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Adapter le chemin de node si nécessaire : which node -->
+    <string>/usr/local/bin/node</string>
+    <string>/Users/laurent/www/veille-sync/node_modules/.bin/tsx</string>
+    <string>/Users/laurent/www/veille-sync/src/index.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/laurent/www/veille-sync</string>
+
+  <!-- Redémarrer automatiquement si le processus plante -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Démarrer au login utilisateur -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Logs -->
+  <key>StandardOutPath</key>
+  <string>/Users/laurent/www/veille-sync/logs/veille-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/laurent/www/veille-sync/logs/veille-sync-error.log</string>
+
+  <!-- Variables d'environnement -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- Throttle : ne pas redémarrer plus d'une fois toutes les 30s -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
