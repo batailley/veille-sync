@@ -13,8 +13,15 @@ const ANYTYPE_SPACE_NAME = process.env.ANYTYPE_SPACE_NAME!;
 const ANYTYPE_VERSION = "2025-11-08";
 
 function checkEnv() {
-  const required = { CLIPPINGS_DIR, GEMINI_API_KEY, ANYTYPE_API_KEY, ANYTYPE_SPACE_NAME };
-  const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
+  const required = {
+    CLIPPINGS_DIR,
+    GEMINI_API_KEY,
+    ANYTYPE_API_KEY,
+    ANYTYPE_SPACE_NAME,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
   if (missing.length) {
     console.error(`✗ Variables .env manquantes : ${missing.join(", ")}`);
     process.exit(1);
@@ -39,7 +46,10 @@ function info(msg: string) {
 }
 
 function parseJson<T>(raw: string): T {
-  const clean = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const clean = raw
+    .replace(/```json\n?/g, "")
+    .replace(/```\n?/g, "")
+    .trim();
   return JSON.parse(clean) as T;
 }
 
@@ -71,24 +81,31 @@ interface AnytypePage {
 
 // ─── Étape 1 : Récupération du fichier ───────────────────────────────────────
 
-async function stepFetch(): Promise<{ filePath: string; fileName: string; rawContent: string }> {
+async function stepFetch(): Promise<{
+  filePath: string;
+  fileName: string;
+  rawContent: string;
+}> {
   step(1, "Récupération du fichier .md le plus récent");
 
   info(`Dossier : ${CLIPPINGS_DIR}`);
 
   const entries = await readdir(CLIPPINGS_DIR, { withFileTypes: true });
   const mdFiles = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("."))
+    .filter(
+      (e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("."),
+    )
     .map((e) => join(CLIPPINGS_DIR, e.name));
 
-  if (!mdFiles.length) throw new Error("Aucun fichier .md trouvé dans le dossier Clippings.");
+  if (!mdFiles.length)
+    throw new Error("Aucun fichier .md trouvé dans le dossier Clippings.");
 
   // Trier par date de modification décroissante
   const withMtime = await Promise.all(
     mdFiles.map(async (fp) => {
       const { mtimeMs } = await import("fs/promises").then((m) => m.stat(fp));
       return { fp, mtimeMs };
-    })
+    }),
   );
   withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
@@ -99,7 +116,8 @@ async function stepFetch(): Promise<{ filePath: string; fileName: string; rawCon
   ok("Fichier", `"${fileName}" (modifié il y a ${ageMinutes} min)`);
 
   const rawContent = await readFile(filePath, "utf-8");
-  if (rawContent.trim().length < 50) throw new Error("Fichier trop court (< 50 caractères).");
+  if (rawContent.trim().length < 50)
+    throw new Error("Fichier trop court (< 50 caractères).");
 
   ok("Contenu", `${rawContent.length.toLocaleString("fr-FR")} caractères lus`);
 
@@ -111,7 +129,7 @@ async function stepFetch(): Promise<{ filePath: string; fileName: string; rawCon
 async function stepParse(
   filePath: string,
   fileName: string,
-  rawContent: string
+  rawContent: string,
 ): Promise<ParsedFile> {
   step(2, "Parsing du fichier Markdown");
 
@@ -147,7 +165,7 @@ async function stepGemini(parsed: ParsedFile): Promise<GeminiResult> {
   step(3, "Traitement Gemini");
 
   const gemini = new GoogleGenerativeAI(GEMINI_API_KEY);
-  const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = gemini.getGenerativeModel({ model: "gemini-2.5-flash" });
 
   // 3a : résumé FR + nettoyage + titre
   info("Résumé en français + nettoyage du contenu...");
@@ -173,12 +191,17 @@ ${parsed.body.slice(0, 12000)}
 ---`;
 
   const r1 = await model.generateContent(promptSummary);
-  const step3a = parseJson<{ cleanedContent: string; summary: string; title: string }>(
-    r1.response.text()
-  );
+  const step3a = parseJson<{
+    cleanedContent: string;
+    summary: string;
+    title: string;
+  }>(r1.response.text());
 
   if (!step3a.summary) throw new Error("Gemini n'a pas retourné de résumé.");
-  ok("Résumé FR", `${step3a.summary.length} car. — "${step3a.summary.slice(0, 80)}..."`);
+  ok(
+    "Résumé FR",
+    `${step3a.summary.length} car. — "${step3a.summary.slice(0, 80)}..."`,
+  );
 
   // 3b : traduction du résumé FR → EN
   info("Traduction du résumé (FR → EN)...");
@@ -204,7 +227,10 @@ ${step3a.summary}`;
 
 // ─── Étape 4 : Construction de l'objet Anytype ───────────────────────────────
 
-async function stepBuild(parsed: ParsedFile, gemini: GeminiResult): Promise<AnytypePage> {
+async function stepBuild(
+  parsed: ParsedFile,
+  gemini: GeminiResult,
+): Promise<AnytypePage> {
   step(4, "Construction de l'objet Anytype");
 
   const date = new Date().toLocaleDateString("fr-FR", {
@@ -275,21 +301,27 @@ async function stepPublish(page: AnytypePage): Promise<void> {
     ok("MCP", "connecté");
 
     info("Résolution de l'espace...");
-    const spaces = await client.call<{ data: Array<{ id: string; name: string }> }>("API-list-spaces");
-    const space = spaces.data.find((s) => s.name === ANYTYPE_SPACE_NAME) ?? spaces.data[0];
+    const spaces = await client.call<{
+      data: Array<{ id: string; name: string }>;
+    }>("API-list-spaces");
+    const space =
+      spaces.data.find((s) => s.name === ANYTYPE_SPACE_NAME) ?? spaces.data[0];
     if (!space) throw new Error("Aucun espace Anytype trouvé.");
     ok("Espace", `"${space.name}" (${space.id.slice(0, 20)}...)`);
 
     info("Création de la page...");
-    const created = await client.call<{ object: { id: string } }>("API-create-object", {
-      space_id: space.id,
-      type_key: "page",
-      name: page.name,
-      body: page.body,
-      ...(page.sourceUrl && {
-        properties: [{ key: "source", url: page.sourceUrl }],
-      }),
-    });
+    const created = await client.call<{ object: { id: string } }>(
+      "API-create-object",
+      {
+        space_id: space.id,
+        type_key: "page",
+        name: page.name,
+        body: page.body,
+        ...(page.sourceUrl && {
+          properties: [{ key: "source", url: page.sourceUrl }],
+        }),
+      },
+    );
 
     ok("Publié", `id = ${created.object.id}`);
   } finally {

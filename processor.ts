@@ -5,7 +5,7 @@ const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
 export interface ProcessedArticle {
   title: string;
   sourceUrl: string;
-  summary: string;       // résumé en français
+  summary: string; // résumé en français
   cleanedContent: string; // texte nettoyé sans pubs
   originalContent: string; // contenu brut du .md
   processedAt: string;
@@ -14,26 +14,32 @@ export interface ProcessedArticle {
 }
 
 export function getWeekNumber(date: Date): { week: number; year: number } {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const d = new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+  );
   const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  const week = Math.ceil(
+    ((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+  );
   return { week, year: d.getUTCFullYear() };
 }
 
 export async function processArticle(
   rawContent: string,
-  fileName: string
+  fileName: string,
 ): Promise<ProcessedArticle> {
   const now = new Date();
   const { week, year } = getWeekNumber(now);
 
   // Extraire le titre et l'URL depuis le front-matter markdown (format Obsidian Clipper)
-  const titleMatch = rawContent.match(/^#\s+(.+)$/m) || rawContent.match(/title:\s*(.+)/);
-  const urlMatch = rawContent.match(/url:\s*(https?:\/\/[^\s\n]+)/) ||
-                   rawContent.match(/source:\s*(https?:\/\/[^\s\n]+)/) ||
-                   rawContent.match(/(https?:\/\/[^\s\n)]+)/);
+  const titleMatch =
+    rawContent.match(/^#\s+(.+)$/m) || rawContent.match(/title:\s*(.+)/);
+  const urlMatch =
+    rawContent.match(/url:\s*(https?:\/\/[^\s\n]+)/) ||
+    rawContent.match(/source:\s*(https?:\/\/[^\s\n]+)/) ||
+    rawContent.match(/(https?:\/\/[^\s\n)]+)/);
 
   const title = titleMatch?.[1]?.trim() ?? fileName.replace(".md", "");
   const sourceUrl = urlMatch?.[1]?.trim() ?? "";
@@ -62,13 +68,18 @@ Contenu brut de l'article :
 ${rawContent.slice(0, 12000)}
 ---`;
 
-  const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = client.getGenerativeModel({
+    model: "gemini-2.5-flash",
+  });
   const result = await model.generateContent(prompt);
   const responseText = result.response.text();
 
   let parsed: { cleanedContent: string; summary: string; title: string };
   try {
-    const clean = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const clean = responseText
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim();
     parsed = JSON.parse(clean);
   } catch (e) {
     console.error("  ✗ Erreur parsing JSON Gemini :", e);
