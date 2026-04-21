@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "test:mcp": "tsx test-mcp.ts"
+    "test:mcp": "tsx test-mcp.ts",
+    "process:one": "tsx process-one.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

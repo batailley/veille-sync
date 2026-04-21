@@ -11,14 +11,14 @@ interface McpResult {
   content: Array<{ type: string; text: string }>;
 }
 
-class AnytypeMcpClient {
+export class AnytypeMcpClient {
   private proc: ReturnType<typeof spawn>;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private nextId = 1;
   private buffer = "";
 
-  constructor() {
-    const headers = JSON.stringify({
+  constructor(headersJson?: string) {
+    const headers = headersJson ?? JSON.stringify({
       Authorization: `Bearer ${API_KEY}`,
       "Anytype-Version": ANYTYPE_VERSION,
     });
