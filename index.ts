@@ -11,7 +11,7 @@ const PROCESSED_DIR = process.env.PROCESSED_DIR!;
 
 // Vérification des variables d'environnement requises
 function checkEnv() {
-  const required = ["GEMINI_API_KEY", "CLIPPINGS_DIR", "ANYTYPE_MCP_URL", "ANYTYPE_SPACE_NAME"];
+  const required = ["GEMINI_API_KEY", "CLIPPINGS_DIR", "ANYTYPE_API_KEY", "ANYTYPE_SPACE_NAME"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     console.error(`✗ Variables .env manquantes : ${missing.join(", ")}`);

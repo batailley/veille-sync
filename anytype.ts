@@ -1,73 +1,129 @@
+import { spawn } from "child_process";
 import type { ProcessedArticle } from "./processor.js";
 
-const MCP_URL = process.env.ANYTYPE_MCP_URL ?? "http://localhost:31009";
-const SPACE_NAME = process.env.ANYTYPE_SPACE_NAME ?? "Mon espace";
+const SPACE_NAME = process.env.ANYTYPE_SPACE_NAME ?? "";
+const API_KEY = process.env.ANYTYPE_API_KEY ?? "";
+const ANYTYPE_VERSION = "2025-11-08";
 
-// --- Helpers bas niveau ---
+// --- Client MCP stdio ---
 
-async function mcpCall(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params });
-
-  const res = await fetch(`${MCP_URL}/rpc`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-  });
-
-  if (!res.ok) {
-    throw new Error(`MCP HTTP ${res.status}: ${await res.text()}`);
-  }
-
-  const json = (await res.json()) as { result?: unknown; error?: { message: string } };
-  if (json.error) throw new Error(`MCP error: ${json.error.message}`);
-  return json.result;
+interface McpResult {
+  content: Array<{ type: string; text: string }>;
 }
 
-// --- Résolution de l'espace ---
+class AnytypeMcpClient {
+  private proc: ReturnType<typeof spawn>;
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private nextId = 1;
+  private buffer = "";
 
-async function getSpaceId(): Promise<string> {
-  const result = (await mcpCall("space_list")) as { spaces: Array<{ id: string; name: string }> };
-  const space = result.spaces.find((s) => s.name === SPACE_NAME) ?? result.spaces[0];
-  if (!space) throw new Error("Aucun espace Anytype trouvé. Anytype Desktop est-il ouvert ?");
+  constructor() {
+    const headers = JSON.stringify({
+      Authorization: `Bearer ${API_KEY}`,
+      "Anytype-Version": ANYTYPE_VERSION,
+    });
+
+    this.proc = spawn("npx", ["-y", "@anyproto/anytype-mcp"], {
+      env: { ...process.env, OPENAPI_MCP_HEADERS: headers },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.proc.stdout!.on("data", (chunk: Buffer) => {
+      this.buffer += chunk.toString();
+      const lines = this.buffer.split("\n");
+      this.buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line) as { id: number; result?: unknown; error?: { message: string } };
+          const handler = this.pending.get(msg.id);
+          if (!handler) continue;
+          this.pending.delete(msg.id);
+          if (msg.error) handler.reject(new Error(msg.error.message));
+          else handler.resolve(msg.result);
+        } catch { /* ligne non-JSON, ignorée */ }
+      }
+    });
+
+    this.proc.stderr!.on("data", () => {});
+  }
+
+  private rpc(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+  }
+
+  async initialize(): Promise<void> {
+    await this.rpc("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "veille-sync", version: "1.0.0" },
+    });
+  }
+
+  async call<T>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
+    const result = (await this.rpc("tools/call", { name: tool, arguments: args })) as McpResult;
+    const text = result.content.find((c) => c.type === "text")?.text ?? "{}";
+    return JSON.parse(text) as T;
+  }
+
+  close(): void {
+    this.proc.stdin!.end();
+    this.proc.kill();
+  }
+}
+
+// --- Types réponses Anytype ---
+
+interface AnySpace  { id: string; name: string }
+interface AnyObject { id: string; name: string }
+interface AnyList<T> { data: T[]; pagination: { total: number } }
+
+// --- Helpers métier ---
+
+async function getSpaceId(client: AnytypeMcpClient): Promise<string> {
+  const res = await client.call<AnyList<AnySpace>>("API-list-spaces");
+  const space = res.data.find((s) => s.name === SPACE_NAME) ?? res.data[0];
+  if (!space) throw new Error("Aucun espace Anytype trouvé.");
+  if (space.name !== SPACE_NAME)
+    console.log(`  ⚠  Espace "${SPACE_NAME}" introuvable, fallback sur "${space.name}"`);
   return space.id;
 }
 
-// --- Trouver ou créer la page "Veille - Semaine XX" ---
-
 async function getOrCreateWeekPage(
+  client: AnytypeMcpClient,
   spaceId: string,
   week: number,
   year: number
 ): Promise<string> {
   const pageTitle = `Veille - Semaine ${String(week).padStart(2, "0")} · ${year}`;
 
-  // Chercher si la page existe déjà
-  const searchResult = (await mcpCall("object_search", {
-    spaceId,
+  const searchRes = await client.call<AnyList<AnyObject>>("API-search-space", {
+    space_id: spaceId,
     query: pageTitle,
     types: ["page"],
     limit: 5,
-  })) as { objects: Array<{ id: string; name: string }> };
+  });
 
-  const existing = searchResult.objects.find((o) => o.name === pageTitle);
+  const existing = searchRes.data.find((o) => o.name === pageTitle);
   if (existing) {
-    console.log(`  ✓ Page semaine existante trouvée : "${pageTitle}"`);
+    console.log(`  ✓ Page semaine existante : "${pageTitle}"`);
     return existing.id;
   }
 
-  // Créer la page parent
-  const created = (await mcpCall("object_create", {
-    spaceId,
+  const created = await client.call<{ object: AnyObject }>("API-create-object", {
+    space_id: spaceId,
+    type_key: "page",
     name: pageTitle,
-    type: "page",
     body: `# ${pageTitle}\n\nArticles de veille de la semaine ${week}.`,
-  })) as { object: { id: string } };
+  });
 
   console.log(`  ✓ Page semaine créée : "${pageTitle}"`);
   return created.object.id;
 }
-
-// --- Créer la sous-page article ---
 
 function buildArticleBody(article: ProcessedArticle): string {
   const date = new Date(article.processedAt).toLocaleDateString("fr-FR", {
@@ -97,33 +153,37 @@ function buildArticleBody(article: ProcessedArticle): string {
     ``,
     `---`,
     ``,
-    `<details>`,
-    `<summary>Contenu brut original</summary>`,
+    `## Contenu brut original`,
     ``,
     article.originalContent,
-    ``,
-    `</details>`,
   ].join("\n");
 }
 
 // --- Point d'entrée principal ---
 
 export async function publishToAnytype(article: ProcessedArticle): Promise<void> {
-  console.log(`  → Connexion à Anytype MCP (${MCP_URL})...`);
+  console.log(`  → Connexion à Anytype MCP (stdio)...`);
+  const client = new AnytypeMcpClient();
 
-  const spaceId = await getSpaceId();
-  const weekPageId = await getOrCreateWeekPage(spaceId, article.weekNumber, article.year);
+  try {
+    await client.initialize();
 
-  const subPageTitle = article.title;
-  const body = buildArticleBody(article);
+    const spaceId = await getSpaceId(client);
+    const weekPageId = await getOrCreateWeekPage(client, spaceId, article.weekNumber, article.year);
 
-  const result = (await mcpCall("object_create", {
-    spaceId,
-    parentId: weekPageId,
-    name: subPageTitle,
-    type: "page",
-    body,
-  })) as { object: { id: string } };
+    const created = await client.call<{ object: AnyObject }>("API-create-object", {
+      space_id: spaceId,
+      type_key: "page",
+      name: article.title,
+      body: buildArticleBody(article),
+      properties: [
+        ...(article.sourceUrl ? [{ key: "source", url: article.sourceUrl }] : []),
+      ],
+    });
 
-  console.log(`  ✓ Sous-page créée : "${subPageTitle}" (id: ${result.object.id})`);
+    console.log(`  ✓ Article publié : "${article.title}" (id: ${created.object.id})`);
+    console.log(`  ✓ Page semaine : ${weekPageId}`);
+  } finally {
+    client.close();
+  }
 }
