@@ -7,7 +7,12 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "test:mcp": "tsx test-mcp.ts",
-    "process:one": "tsx process-one.ts"
+    "process:one": "tsx process-one.ts --provider gemini",
+    "process:one:claude": "tsx process-one.ts --provider claude",
+    "api": "tsx api-server.ts",
+    "ui": "cd ui && pnpm dev",
+    "ui:install": "cd ui && pnpm install",
+    "studio": "concurrently -n api,ui -c cyan,magenta \"pnpm api\" \"pnpm ui\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -18,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "concurrently": "^9.2.1",
     "tsx": "^4.15.0",
     "typescript": "^5.4.0"
   }

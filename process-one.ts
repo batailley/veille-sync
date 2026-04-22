@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, stat } from "fs/promises";
+import { spawn } from "child_process";
 import { join, basename } from "path";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { AnytypeMcpClient } from "./anytype.js";
@@ -7,28 +8,81 @@ import { AnytypeMcpClient } from "./anytype.js";
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const CLIPPINGS_DIR = process.env.CLIPPINGS_DIR!;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY!;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
 const ANYTYPE_API_KEY = process.env.ANYTYPE_API_KEY!;
 const ANYTYPE_SPACE_NAME = process.env.ANYTYPE_SPACE_NAME!;
 const ANYTYPE_VERSION = "2025-11-08";
 
-function checkEnv() {
-  const required = {
+type ProviderName = "gemini" | "claude";
+
+function parseArgs(): ProviderName {
+  const idx = process.argv.indexOf("--provider");
+  const val = idx !== -1 ? process.argv[idx + 1] : "gemini";
+  if (val !== "gemini" && val !== "claude") {
+    console.error(`✗ --provider doit être "gemini" ou "claude" (reçu : "${val}")`);
+    process.exit(1);
+  }
+  return val;
+}
+
+function checkEnv(provider: ProviderName) {
+  const required: Record<string, string> = {
     CLIPPINGS_DIR,
-    GEMINI_API_KEY,
     ANYTYPE_API_KEY,
     ANYTYPE_SPACE_NAME,
   };
-  const missing = Object.entries(required)
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
+  if (provider === "gemini") required["GEMINI_API_KEY"] = GEMINI_API_KEY;
+
+  const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
   if (missing.length) {
     console.error(`✗ Variables .env manquantes : ${missing.join(", ")}`);
     process.exit(1);
   }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Abstraction AI provider ──────────────────────────────────────────────────
+
+interface AiProvider {
+  label: string;
+  generate(prompt: string): Promise<string>;
+}
+
+function makeGeminiProvider(): AiProvider {
+  const gemini = new GoogleGenerativeAI(GEMINI_API_KEY);
+  const model = gemini.getGenerativeModel({ model: "gemini-2.5-flash" });
+  return {
+    label: "Gemini 2.5 Flash",
+    async generate(prompt: string): Promise<string> {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    },
+  };
+}
+
+function makeClaudeProvider(): AiProvider {
+  return {
+    label: "Claude Code (local)",
+    generate(prompt: string): Promise<string> {
+      return new Promise((resolve, reject) => {
+        const proc = spawn("claude", ["--print"], {
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        proc.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
+        proc.stderr!.on("data", (d: Buffer) => { err += d.toString(); });
+        proc.on("close", (code) => {
+          if (code !== 0) reject(new Error(`claude exited ${code}: ${err.slice(0, 300)}`));
+          else resolve(out.trim());
+        });
+        proc.stdin!.write(prompt);
+        proc.stdin!.end();
+      });
+    },
+  };
+}
+
+// ─── Helpers affichage ────────────────────────────────────────────────────────
 
 function step(n: number, label: string) {
   const bar = "─".repeat(50);
@@ -46,10 +100,7 @@ function info(msg: string) {
 }
 
 function parseJson<T>(raw: string): T {
-  const clean = raw
-    .replace(/```json\n?/g, "")
-    .replace(/```\n?/g, "")
-    .trim();
+  const clean = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   return JSON.parse(clean) as T;
 }
 
@@ -64,10 +115,12 @@ interface ParsedFile {
   body: string;
 }
 
-interface GeminiResult {
-  cleanedContent: string;
+interface AiResult {
+  isSourceFrench: boolean;
+  cleanedContent: string;   // langue originale, nettoyé
+  contentFr: string;        // traduction française (vide si source déjà en FR)
   summaryFr: string;
-  summaryEn: string;
+  summaryEn: string;        // vide si source déjà en FR
   title: string;
 }
 
@@ -81,31 +134,20 @@ interface AnytypePage {
 
 // ─── Étape 1 : Récupération du fichier ───────────────────────────────────────
 
-async function stepFetch(): Promise<{
-  filePath: string;
-  fileName: string;
-  rawContent: string;
-}> {
+async function stepFetch(): Promise<{ filePath: string; fileName: string; rawContent: string }> {
   step(1, "Récupération du fichier .md le plus récent");
 
   info(`Dossier : ${CLIPPINGS_DIR}`);
 
   const entries = await readdir(CLIPPINGS_DIR, { withFileTypes: true });
   const mdFiles = entries
-    .filter(
-      (e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("."),
-    )
+    .filter((e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("."))
     .map((e) => join(CLIPPINGS_DIR, e.name));
 
-  if (!mdFiles.length)
-    throw new Error("Aucun fichier .md trouvé dans le dossier Clippings.");
+  if (!mdFiles.length) throw new Error("Aucun fichier .md trouvé dans le dossier Clippings.");
 
-  // Trier par date de modification décroissante
   const withMtime = await Promise.all(
-    mdFiles.map(async (fp) => {
-      const { mtimeMs } = await import("fs/promises").then((m) => m.stat(fp));
-      return { fp, mtimeMs };
-    }),
+    mdFiles.map(async (fp) => ({ fp, mtimeMs: (await stat(fp)).mtimeMs }))
   );
   withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
@@ -116,8 +158,7 @@ async function stepFetch(): Promise<{
   ok("Fichier", `"${fileName}" (modifié il y a ${ageMinutes} min)`);
 
   const rawContent = await readFile(filePath, "utf-8");
-  if (rawContent.trim().length < 50)
-    throw new Error("Fichier trop court (< 50 caractères).");
+  if (rawContent.trim().length < 50) throw new Error("Fichier trop court (< 50 caractères).");
 
   ok("Contenu", `${rawContent.length.toLocaleString("fr-FR")} caractères lus`);
 
@@ -126,11 +167,7 @@ async function stepFetch(): Promise<{
 
 // ─── Étape 2 : Parsing ────────────────────────────────────────────────────────
 
-async function stepParse(
-  filePath: string,
-  fileName: string,
-  rawContent: string,
-): Promise<ParsedFile> {
+async function stepParse(filePath: string, fileName: string, rawContent: string): Promise<ParsedFile> {
   step(2, "Parsing du fichier Markdown");
 
   const titleMatch =
@@ -144,11 +181,8 @@ async function stepParse(
   const title = titleMatch?.[1]?.trim() ?? fileName.replace(".md", "");
   const sourceUrl = urlMatch?.[1]?.trim() ?? "";
 
-  // Extraire le corps : tout ce qui suit le front-matter YAML (---) ou le premier h1
   const frontMatterEnd = rawContent.match(/^---[\s\S]*?^---\s*/m);
-  const body = frontMatterEnd
-    ? rawContent.slice(frontMatterEnd[0].length).trim()
-    : rawContent;
+  const body = frontMatterEnd ? rawContent.slice(frontMatterEnd[0].length).trim() : rawContent;
 
   if (!title) throw new Error("Impossible d'extraire un titre.");
 
@@ -159,30 +193,30 @@ async function stepParse(
   return { filePath, fileName, rawContent, title, sourceUrl, body };
 }
 
-// ─── Étape 3 : Traitement Gemini ─────────────────────────────────────────────
+// ─── Étape 3 : Traitement AI ──────────────────────────────────────────────────
 
-async function stepGemini(parsed: ParsedFile): Promise<GeminiResult> {
-  step(3, "Traitement Gemini");
+async function stepAi(parsed: ParsedFile, provider: AiProvider): Promise<AiResult> {
+  step(3, `Traitement AI — ${provider.label}`);
+  info("Détection langue, nettoyage, résumé et traduction...");
 
-  const gemini = new GoogleGenerativeAI(GEMINI_API_KEY);
-  const model = gemini.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-  // 3a : résumé FR + nettoyage + titre
-  info("Résumé en français + nettoyage du contenu...");
-
-  const promptSummary = `Tu es un assistant de veille technologique. Voici le contenu brut d'un article web (format Markdown).
+  const prompt = `Tu es un assistant de veille technologique. Voici le contenu brut d'un article web (format Markdown).
 
 Effectue ces tâches et réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaires.
 
-1. **Nettoyage** : Supprime publicités, menus, popups, mentions légales, boutons, fil d'Ariane, recommandations. Conserve uniquement le texte éditorial.
-2. **Résumé en français** : 3 à 6 phrases capturant l'essentiel.
-3. **Titre** : Propose un titre propre en français si celui extrait est incomplet.
+1. **Langue** : L'article est-il rédigé en français ? (isSourceFrench: true/false)
+2. **Nettoyage** : Supprime publicités, menus, popups, mentions légales, boutons, fil d'Ariane, recommandations. Conserve uniquement le texte éditorial.
+3. **Résumé en français** : 3 à 6 phrases capturant l'essentiel.
+4. **Si l'article N'EST PAS en français** : traduis le contenu nettoyé intégralement en français + génère un résumé en anglais.
+5. **Titre** : Propose un titre propre en français.
 
 JSON strict :
 {
+  "isSourceFrench": true ou false,
   "cleanedContent": "texte nettoyé en langue originale",
-  "summary": "résumé en français",
-  "title": "titre propre"
+  "contentFr": "traduction française complète du contenu (chaîne vide si déjà en français)",
+  "summaryFr": "résumé en français",
+  "summaryEn": "résumé en anglais (chaîne vide si article déjà en français)",
+  "title": "titre propre en français"
 }
 
 Contenu :
@@ -190,47 +224,30 @@ Contenu :
 ${parsed.body.slice(0, 12000)}
 ---`;
 
-  const r1 = await model.generateContent(promptSummary);
-  const step3a = parseJson<{
-    cleanedContent: string;
-    summary: string;
-    title: string;
-  }>(r1.response.text());
+  const raw = await provider.generate(prompt);
+  const result = parseJson<AiResult>(raw);
 
-  if (!step3a.summary) throw new Error("Gemini n'a pas retourné de résumé.");
-  ok(
-    "Résumé FR",
-    `${step3a.summary.length} car. — "${step3a.summary.slice(0, 80)}..."`,
-  );
+  if (!result.summaryFr) throw new Error("Le provider n'a pas retourné de résumé.");
 
-  // 3b : traduction du résumé FR → EN
-  info("Traduction du résumé (FR → EN)...");
-
-  const promptTranslate = `Translate the following French text to English. Reply with the translation only, no explanation.
-
-Text:
-${step3a.summary}`;
-
-  const r2 = await model.generateContent(promptTranslate);
-  const summaryEn = r2.response.text().trim();
-
-  if (!summaryEn) throw new Error("Gemini n'a pas retourné de traduction.");
-  ok("Résumé EN", `${summaryEn.length} car. — "${summaryEn.slice(0, 80)}..."`);
+  ok("Langue", result.isSourceFrench ? "Français (pas de traduction)" : "Anglais → traduction FR");
+  ok("Résumé FR", `${result.summaryFr.length} car. — "${result.summaryFr.slice(0, 80)}..."`);
+  if (!result.isSourceFrench && result.summaryEn) {
+    ok("Résumé EN", `${result.summaryEn.length} car. — "${result.summaryEn.slice(0, 80)}..."`);
+  }
 
   return {
-    cleanedContent: step3a.cleanedContent || parsed.body,
-    summaryFr: step3a.summary,
-    summaryEn,
-    title: step3a.title || parsed.title,
+    isSourceFrench: result.isSourceFrench,
+    cleanedContent: result.cleanedContent || parsed.body,
+    contentFr: result.contentFr || "",
+    summaryFr: result.summaryFr,
+    summaryEn: result.summaryEn || "",
+    title: result.title || parsed.title,
   };
 }
 
 // ─── Étape 4 : Construction de l'objet Anytype ───────────────────────────────
 
-async function stepBuild(
-  parsed: ParsedFile,
-  gemini: GeminiResult,
-): Promise<AnytypePage> {
+async function stepBuild(parsed: ParsedFile, ai: AiResult): Promise<AnytypePage> {
   step(4, "Construction de l'objet Anytype");
 
   const date = new Date().toLocaleDateString("fr-FR", {
@@ -240,8 +257,10 @@ async function stepBuild(
     year: "numeric",
   });
 
-  const body = [
-    `# ${gemini.title}`,
+  const articleContentFr = ai.isSourceFrench ? ai.cleanedContent : ai.contentFr;
+
+  const sections: string[] = [
+    `# ${ai.title}`,
     ``,
     `> **Source :** ${parsed.sourceUrl || "_non disponible_"}`,
     `> **Ajouté le :** ${date}`,
@@ -250,40 +269,52 @@ async function stepBuild(
     ``,
     `## Résumé`,
     ``,
-    gemini.summaryFr,
-    ``,
-    `*Summary (EN): ${gemini.summaryEn}*`,
+    ai.summaryFr,
     ``,
     `---`,
     ``,
-    `## Contenu de l'article`,
+    `## Article`,
     ``,
-    gemini.cleanedContent,
-    ``,
-    `---`,
-    ``,
-    `## Contenu brut original`,
-    ``,
-    parsed.rawContent,
-  ].join("\n");
+    articleContentFr,
+  ];
+
+  if (!ai.isSourceFrench) {
+    sections.push(
+      ``,
+      `---`,
+      ``,
+      `## Summary (EN)`,
+      ``,
+      ai.summaryEn,
+      ``,
+      `---`,
+      ``,
+      `## Article (EN)`,
+      ``,
+      ai.cleanedContent,
+    );
+  }
+
+  const body = sections.join("\n");
 
   const page: AnytypePage = {
-    name: gemini.title,
+    name: ai.title,
     body,
     sourceUrl: parsed.sourceUrl,
-    summaryFr: gemini.summaryFr,
-    summaryEn: gemini.summaryEn,
+    summaryFr: ai.summaryFr,
+    summaryEn: ai.summaryEn,
   };
 
   ok("Nom", `"${page.name}"`);
   ok("Corps", `${page.body.length.toLocaleString("fr-FR")} caractères`);
-  ok("Résumé FR", `${page.summaryFr.length} caractères`);
-  ok("Résumé EN", `${page.summaryEn.length} caractères`);
+  ok("Structure", ai.isSourceFrench ? "FR uniquement" : "FR + EN");
 
   return page;
 }
 
 // ─── Étape 5 : Publication Anytype ────────────────────────────────────────────
+
+const VEILLE_AUTO_TITLE = "[VEILLE-AUTO]";
 
 async function stepPublish(page: AnytypePage): Promise<void> {
   step(5, "Publication dans Anytype");
@@ -301,29 +332,54 @@ async function stepPublish(page: AnytypePage): Promise<void> {
     ok("MCP", "connecté");
 
     info("Résolution de l'espace...");
-    const spaces = await client.call<{
-      data: Array<{ id: string; name: string }>;
-    }>("API-list-spaces");
-    const space =
-      spaces.data.find((s) => s.name === ANYTYPE_SPACE_NAME) ?? spaces.data[0];
+    const spaces = await client.call<{ data: Array<{ id: string; name: string }> }>("API-list-spaces");
+    const space = spaces.data.find((s) => s.name === ANYTYPE_SPACE_NAME) ?? spaces.data[0];
     if (!space) throw new Error("Aucun espace Anytype trouvé.");
     ok("Espace", `"${space.name}" (${space.id.slice(0, 20)}...)`);
 
-    info("Création de la page...");
-    const created = await client.call<{ object: { id: string } }>(
-      "API-create-object",
-      {
-        space_id: space.id,
-        type_key: "page",
-        name: page.name,
-        body: page.body,
-        ...(page.sourceUrl && {
-          properties: [{ key: "source", url: page.sourceUrl }],
-        }),
-      },
-    );
+    info(`Recherche de la collection "${VEILLE_AUTO_TITLE}"...`);
+    const searchRes = await client.call<{ data: Array<{ id: string; name: string }> }>("API-search-space", {
+      space_id: space.id,
+      query: VEILLE_AUTO_TITLE,
+      types: ["collection"],
+      limit: 5,
+    });
+    const existingCollection = searchRes.data.find((o) => o.name === VEILLE_AUTO_TITLE);
 
-    ok("Publié", `id = ${created.object.id}`);
+    let parentId: string;
+    if (existingCollection) {
+      parentId = existingCollection.id;
+      ok("Collection", `existante (${parentId.slice(0, 20)}...)`);
+    } else {
+      info(`Création de la collection "${VEILLE_AUTO_TITLE}"...`);
+      const created = await client.call<{ object: { id: string } }>("API-create-object", {
+        space_id: space.id,
+        type_key: "collection",
+        name: VEILLE_AUTO_TITLE,
+      });
+      parentId = created.object.id;
+      ok("Collection", `créée (${parentId.slice(0, 20)}...)`);
+    }
+
+    info("Création de la page article...");
+    const article = await client.call<{ object: { id: string } }>("API-create-object", {
+      space_id: space.id,
+      type_key: "page",
+      name: page.name,
+      body: page.body,
+      ...(page.sourceUrl && {
+        properties: [{ key: "source", url: page.sourceUrl }],
+      }),
+    });
+    ok("Article", `créé (${article.object.id})`);
+
+    info(`Ajout dans la collection "${VEILLE_AUTO_TITLE}"...`);
+    await client.call("API-add-list-objects", {
+      space_id: space.id,
+      list_id: parentId,
+      objects: [article.object.id],
+    });
+    ok("Lien", `article ajouté à "${VEILLE_AUTO_TITLE}"`);
   } finally {
     client.close();
   }
@@ -332,20 +388,23 @@ async function stepPublish(page: AnytypePage): Promise<void> {
 // ─── Pipeline principal ───────────────────────────────────────────────────────
 
 async function main() {
-  checkEnv();
+  const providerName = parseArgs();
+  checkEnv(providerName);
+
+  const provider = providerName === "claude" ? makeClaudeProvider() : makeGeminiProvider();
 
   const bar = "═".repeat(52);
   console.log(`\n${bar}`);
   console.log(` veille-sync · process-one`);
-  console.log(` Espace : ${ANYTYPE_SPACE_NAME}  |  Modèle : gemini-2.0-flash`);
+  console.log(` Espace : ${ANYTYPE_SPACE_NAME}  |  Provider : ${provider.label}`);
   console.log(bar);
 
   const t0 = Date.now();
 
   const { filePath, fileName, rawContent } = await stepFetch();
   const parsed = await stepParse(filePath, fileName, rawContent);
-  const gemini = await stepGemini(parsed);
-  const page = await stepBuild(parsed, gemini);
+  const ai = await stepAi(parsed, provider);
+  const page = await stepBuild(parsed, ai);
   await stepPublish(page);
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
