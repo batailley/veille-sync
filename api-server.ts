@@ -104,7 +104,7 @@ function drain(): void {
 
   const proc = spawn(
     "tsx",
-    ["process-file.ts", "--file", file, "--provider", model],
+    ["process.ts", "--file", file, "--provider", model],
     { cwd: __dirname, stdio: ["ignore", "inherit", "pipe"] }
   );
 

@@ -3,7 +3,49 @@
     "Le deuxième cerveau de Claude Code coupe l'utilisation du jeton par 5x  par Agent Native.md": {
       "status": "done",
       "model": "claude",
-      "processedAt": "2026-04-22T18:51:46.017Z",
+      "processedAt": "2026-04-23T19:10:54.089Z",
+      "error": null
+    },
+    "The Clear Setup Guide to Run AI Locally on Your Machine in 2026  by Ai studio  in The Ai Studio.md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-23T19:12:31.422Z",
+      "error": null
+    },
+    "Impeccable Design skills for AI harnesses.md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-22T20:21:48.621Z",
+      "error": null
+    },
+    "Why you should avoid using MCP in Claude Code.md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-23T19:13:37.881Z",
+      "error": null
+    },
+    "☕🤖Tutorial How To Automate Claude Code With Scheduled Tasks (It Works While You Sleep).md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-23T19:08:20.119Z",
+      "error": null
+    },
+    "Dead Simple Prompt To Improve Your Code & Software — Works with Agents like Claude Code and Codex…  by Jacob Ferus.md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-23T19:15:54.223Z",
+      "error": null
+    },
+    "Your harness, your memory.md": {
+      "status": "done",
+      "model": "gemini",
+      "processedAt": "2026-04-23T19:26:17.717Z",
+      "error": null
+    },
+    "Claude Code 2026 The Daily Operating System Top Developers Actually Use  by Rick Hightower.md": {
+      "status": "done",
+      "model": "claude",
+      "processedAt": "2026-04-23T19:24:28.705Z",
       "error": null
     }
   }
