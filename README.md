@@ -1,126 +1,182 @@
 # veille-sync
 
-Watcher automatique : iCloud Clippings → Claude API → Anytype
+Automated pipeline: Safari web clippings (Markdown files via iCloud) → AI summarization → Anytype notes.
 
-## Prérequis
+Drop a `.md` file into your Clippings folder and it gets cleaned, summarized in French (translated if needed), and published as a structured page in Anytype — automatically.
 
-- Node.js 18+ (`node --version`)
-- Anytype Desktop ouvert sur le Mac
-- Une clé API Anthropic → https://console.anthropic.com/
+---
+
+## How it works
+
+1. **Watch** — a file watcher (chokidar) monitors a local iCloud Clippings folder for new `.md` files
+2. **Parse** — extracts title, source URL, description, and body from the Markdown front matter
+3. **AI processing** — sends content to an AI model (Gemini 2.5 Flash or Claude Code) which:
+   - detects the article language
+   - strips ads, navigation, and boilerplate
+   - generates a French summary (3–6 sentences)
+   - translates to French if the source is not in French
+   - forges a clean title
+4. **Build** — assembles a structured Markdown page with summary, French article, and optional original
+5. **Publish** — creates the page in Anytype via MCP and adds a dated link to a parent index page
+
+### Result in Anytype
+
+```
+[VEILLE-AUTO]
+├── 12 janvier 2026 — Article title A
+├── 15 janvier 2026 — Article title B
+└── ...
+```
+
+Each article page contains:
+- Source URL and date added
+- French summary
+- Full article (in French)
+- Original content (if source was not in French)
+
+### Two ways to trigger processing
+
+| Mode | How |
+|------|-----|
+| **Manual / UI** | `pnpm studio` — launches a web UI (port 3003) + API server (port 3004) to select files and choose model |
+| **Watcher** | `pnpm dev` — runs continuously, processes any `.md` file dropped into the Clippings folder |
+
+---
+
+## Requirements
+
+- **Node.js 18+**
+- **pnpm**
+- **Anytype Desktop** open on the Mac (the MCP server connects to it locally)
+- **Gemini API key** → [aistudio.google.com](https://aistudio.google.com/) (default model)
+- **OR Claude Code CLI** installed and authenticated (`claude --version`) for the `--provider claude` option
+- **Anytype API key** → Settings → API in Anytype Desktop
 
 ---
 
 ## Installation
 
-### 1. Cloner et installer les dépendances
+### 1. Clone and install dependencies
 
 ```bash
-cd /Users/laurent/www/veille-sync
-npm install
+git clone <repo>
+cd veille-sync
+pnpm install
+pnpm ui:install
 ```
 
-### 2. Configurer le .env
+### 2. Configure environment variables
 
-```bash
-cp .env .env.local
-# Éditer .env avec ta clé API et le nom exact de ton espace Anytype
-nano .env
+Create a `.env` file at the project root:
+
+```env
+CLIPPINGS_DIR=/Users/yourname/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/Clippings
+PROCESSED_DIR=/Users/yourname/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/Clippings/_processed
+
+GEMINI_API_KEY=your-gemini-api-key
+
+ANYTYPE_API_KEY=your-anytype-api-key
+ANYTYPE_SPACE_NAME=My Space
+ANYTYPE_VEILLE_PAGE_ID=the-id-of-your-index-page
 ```
 
-Vérifier le nom de ton espace : ouvrir Anytype → Settings → nom en haut à gauche.
+To find `ANYTYPE_VEILLE_PAGE_ID`: open the target page in Anytype → copy link → the object ID is in the URL.
 
-### 3. Installer le MCP Anytype
+### 3. Install the Anytype MCP server
 
 ```bash
 npm install -g @anytype/mcp-server
 ```
 
-Lancer le serveur MCP (à faire une première fois pour tester) :
+Test it:
 ```bash
 anytype-mcp
-# Doit afficher : MCP server listening on port 31009
+# Should print: MCP server listening on port 31009
 ```
-
-### 4. Tester le pipeline manuellement
-
-```bash
-npm run dev
-```
-
-Puis déposer un fichier `.md` dans le dossier Clippings depuis Safari.
-Tu dois voir apparaître les logs de traitement dans le terminal.
 
 ---
 
-## Lancement automatique (launchd)
+## Usage
 
-### Vérifier le chemin de node
+### Web UI (recommended)
+
+```bash
+pnpm studio
+```
+
+Opens the UI at `http://localhost:3003`. Select files, pick the AI model, and click Process.
+
+### Process a specific file from the command line
+
+```bash
+pnpm process --file "article-name.md"
+# or with Claude Code as the AI provider:
+pnpm process:claude --file "article-name.md"
+```
+
+### Run the file watcher (processes files automatically on drop)
+
+```bash
+pnpm dev
+```
+
+---
+
+## Auto-start on login (macOS launchd)
+
+### 1. Check your node path
 
 ```bash
 which node
-# Ex : /usr/local/bin/node  ou  /opt/homebrew/bin/node (Apple Silicon)
+# e.g. /opt/homebrew/bin/node  (Apple Silicon)
 ```
 
-Adapter le chemin dans `com.laurent.veille-sync.plist` si nécessaire.
+Update the path in `com.laurent.veille-sync.plist` if it differs from `/usr/local/bin/node`.
 
-### Créer le dossier de logs
+### 2. Create the logs folder
 
 ```bash
 mkdir -p /Users/laurent/www/veille-sync/logs
 ```
 
-### Installer le service
+### 3. Install the service
 
 ```bash
-# Copier le plist dans LaunchAgents
 cp com.laurent.veille-sync.plist ~/Library/LaunchAgents/
-
-# Charger le service
 launchctl load ~/Library/LaunchAgents/com.laurent.veille-sync.plist
-
-# Vérifier qu'il tourne
-launchctl list | grep veille
+launchctl list | grep veille   # should show a PID
 ```
 
-### Commandes utiles
+### Manage the service
 
 ```bash
-# Arrêter
+# Stop
 launchctl unload ~/Library/LaunchAgents/com.laurent.veille-sync.plist
 
-# Redémarrer
+# Restart
 launchctl unload ~/Library/LaunchAgents/com.laurent.veille-sync.plist
 launchctl load ~/Library/LaunchAgents/com.laurent.veille-sync.plist
 
-# Voir les logs en temps réel
+# Live logs
 tail -f /Users/laurent/www/veille-sync/logs/veille-sync.log
+tail -f /Users/laurent/www/veille-sync/logs/veille-sync-error.log
 ```
 
 ---
 
-## Structure des pages Anytype
+## Troubleshooting
 
-```
-Veille - Semaine 42 · 2025
-├── Titre de l'article 1
-│   ├── Résumé (FR)
-│   ├── Contenu nettoyé
-│   └── Contenu brut original (repliable)
-├── Titre de l'article 2
-│   └── ...
-```
+**Anytype MCP not responding**
+→ Make sure Anytype Desktop is open
+→ Test: `curl http://localhost:31009/rpc`
 
----
+**Files not processed**
+→ Check `CLIPPINGS_DIR` in `.env` — must be the exact path
+→ Check logs: `tail -f logs/veille-sync-error.log`
 
-## Dépannage
+**Gemini API error**
+→ Verify `GEMINI_API_KEY` in `.env`
 
-**MCP Anytype ne répond pas**
-→ Vérifier qu'Anytype Desktop est ouvert
-→ Tester : `curl http://localhost:31009/rpc`
-
-**Fichiers non traités**
-→ Vérifier `CLIPPINGS_DIR` dans .env
-→ Voir les logs : `tail -f logs/veille-sync-error.log`
-
-**Erreur Claude API**
-→ Vérifier la clé dans .env : `ANTHROPIC_API_KEY=sk-ant-...`
+**Claude provider fails**
+→ Verify Claude Code CLI is installed: `claude --version`
+→ Make sure it is authenticated
